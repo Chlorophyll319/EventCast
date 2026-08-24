@@ -1,0 +1,7 @@
+# Ignore directories and files related to agents and AI models
+.agents/
+.claude/
+.github/
+.codex/
+.mcp.json
+AGENTS.md
