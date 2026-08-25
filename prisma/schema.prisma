@@ -1,0 +1,102 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String     @id @default(cuid())
+  email     String     @unique
+  createdAt DateTime   @default(now())
+  pages     Page[]
+  apiTokens ApiToken[]
+}
+
+enum PageTemplate {
+  timeline
+  lineup
+}
+
+enum PageStatus {
+  unlisted
+  public
+  unpublished
+}
+
+model Page {
+  id              String       @id @default(cuid())
+  userId          String
+  slug            String       @unique
+  title           String
+  dateRangeStart  DateTime
+  dateRangeEnd    DateTime
+  template        PageTemplate
+  status          PageStatus   @default(unlisted)
+  timezone        String
+  viewCount       Int          @default(0)
+  deletedAt       DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events Event[]
+  tags   Tag[]
+}
+
+model Event {
+  id        String    @id @default(cuid())
+  pageId    String
+  name      String
+  startTime DateTime
+  endTime   DateTime?
+  tagId     String?
+  location  String?
+  note      String?
+
+  page Page @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  tag  Tag? @relation(fields: [tagId], references: [id], onDelete: SetNull)
+}
+
+enum TagColor {
+  red
+  orange
+  yellow
+  green
+  blue
+  purple
+  pink
+  gray
+}
+
+model Tag {
+  id     String   @id @default(cuid())
+  pageId String
+  label  String
+  color  TagColor
+
+  page   Page    @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  events Event[]
+
+  @@unique([pageId, label])
+}
+
+enum ApiTokenScope {
+  read
+  write
+}
+
+model ApiToken {
+  id         String        @id @default(cuid())
+  userId     String
+  tokenHash  String        @unique
+  scope      ApiTokenScope
+  label      String?
+  createdAt  DateTime      @default(now())
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
