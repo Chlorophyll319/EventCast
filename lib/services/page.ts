@@ -2,7 +2,7 @@ import { Prisma } from "../generated/prisma/client";
 import type { PageStatus, PageTemplate, TagColor } from "../generated/prisma/enums";
 import { prisma } from "../prisma";
 import { PageLimitError, PageNotFoundError, PageValidationError } from "./pageErrors";
-import { validateCreatePageInput, validateUpdatePageInput } from "./pageValidation";
+import { validateCreatePageInput, validateSetPageStatusInput, validateUpdatePageInput } from "./pageValidation";
 import { generateUniquePageSlug, SlugGenerationError } from "./slug";
 
 const PAGE_LIMIT = 10;
@@ -369,4 +369,34 @@ function isTagLabelUniqueConflict(error: unknown): boolean {
   }
   const target = error.meta?.target;
   return Array.isArray(target) && target.includes("label");
+}
+
+export async function setPageStatus(userId: string, id: string, rawInput: unknown): Promise<PageDetail> {
+  const status = validateSetPageStatusInput(rawInput);
+
+  // updateMany 的 where 條件 (id+userId+deletedAt:null) 由 DB 原子性評估，
+  // 避免 find 再 update 兩步之間的 race。
+  const result = await prisma.page.updateMany({
+    where: { id, userId, deletedAt: null },
+    data: { status },
+  });
+  if (result.count === 0) {
+    throw new PageNotFoundError("Page not found.");
+  }
+
+  const page = await getPageById(userId, id);
+  if (!page) {
+    throw new PageNotFoundError("Page not found.");
+  }
+  return page;
+}
+
+export async function deletePage(userId: string, id: string): Promise<void> {
+  const result = await prisma.page.updateMany({
+    where: { id, userId, deletedAt: null },
+    data: { deletedAt: new Date() },
+  });
+  if (result.count === 0) {
+    throw new PageNotFoundError("Page not found.");
+  }
 }

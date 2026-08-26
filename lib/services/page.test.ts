@@ -7,6 +7,7 @@ const eventCreate = vi.fn();
 const transaction = vi.fn();
 const findMany = vi.fn();
 const findFirst = vi.fn();
+const updateMany = vi.fn();
 const txPageFindFirst = vi.fn();
 const txPageUpdate = vi.fn();
 const txTagUpdate = vi.fn();
@@ -19,6 +20,7 @@ vi.mock("../prisma", () => ({
     page: {
       findMany: (...args: unknown[]) => findMany(...args),
       findFirst: (...args: unknown[]) => findFirst(...args),
+      updateMany: (...args: unknown[]) => updateMany(...args),
     },
   },
 }));
@@ -30,7 +32,7 @@ vi.mock("./slug", () => ({
 }));
 
 import { Prisma } from "../generated/prisma/client";
-import { createPage, getPageById, listPages, updatePage } from "./page";
+import { createPage, deletePage, getPageById, listPages, setPageStatus, updatePage } from "./page";
 import { PageLimitError, PageNotFoundError, PageValidationError } from "./pageErrors";
 
 function tx() {
@@ -82,6 +84,7 @@ beforeEach(() => {
   generateUniquePageSlug.mockReset();
   findMany.mockReset();
   findFirst.mockReset();
+  updateMany.mockReset();
   txPageFindFirst.mockReset();
   txPageUpdate.mockReset();
   txTagUpdate.mockReset();
@@ -414,5 +417,55 @@ describe("updatePage", () => {
     await expect(
       updatePage("user-1", "page-1", { tags: [{ label: "VIP", color: "purple" }] }),
     ).rejects.toThrow(PageValidationError);
+  });
+});
+
+describe("setPageStatus", () => {
+  it("updates the status and returns the full page", async () => {
+    updateMany.mockResolvedValue({ count: 1 });
+    findFirst.mockResolvedValue({
+      ...pageRecord({ status: "public" }),
+      tags: [],
+      events: [],
+    });
+
+    const result = await setPageStatus("user-1", "page-1", { status: "public" });
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: "page-1", userId: "user-1", deletedAt: null },
+      data: { status: "public" },
+    });
+    expect(result.status).toBe("public");
+  });
+
+  it("throws PageNotFoundError when the page does not exist, is not owned by the user, or is soft-deleted", async () => {
+    updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(setPageStatus("user-1", "page-1", { status: "public" })).rejects.toThrow(PageNotFoundError);
+    expect(findFirst).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid status value", async () => {
+    await expect(setPageStatus("user-1", "page-1", { status: "archived" })).rejects.toThrow(PageValidationError);
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("deletePage", () => {
+  it("soft-deletes the page by setting deletedAt", async () => {
+    updateMany.mockResolvedValue({ count: 1 });
+
+    await deletePage("user-1", "page-1");
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: "page-1", userId: "user-1", deletedAt: null },
+      data: { deletedAt: expect.any(Date) },
+    });
+  });
+
+  it("throws PageNotFoundError when the page does not exist, is not owned by the user, or is already deleted", async () => {
+    updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(deletePage("user-1", "page-1")).rejects.toThrow(PageNotFoundError);
   });
 });
