@@ -190,6 +190,45 @@ export async function getPageById(userId: string, id: string): Promise<PageDetai
   };
 }
 
+export async function getPageBySlug(slug: string): Promise<PageDetail | null> {
+  // 公開頁查詢：不限定 userId（任何人皆可用 slug 存取），僅排除軟刪除。
+  const page = await prisma.page.findFirst({
+    where: { slug, deletedAt: null },
+    include: {
+      tags: true,
+      events: { orderBy: { startTime: "asc" } },
+    },
+  });
+  if (!page) {
+    return null;
+  }
+
+  return {
+    id: page.id,
+    slug: page.slug,
+    title: page.title,
+    dateRangeStart: page.dateRangeStart,
+    dateRangeEnd: page.dateRangeEnd,
+    template: page.template,
+    status: page.status,
+    timezone: page.timezone,
+    viewCount: page.viewCount,
+    createdAt: page.createdAt,
+    updatedAt: page.updatedAt,
+    tags: page.tags,
+    events: page.events,
+  };
+}
+
+export async function incrementPageViewCount(id: string): Promise<void> {
+  // where 條件把「仍是可瀏覽狀態」與遞增動作綁在同一個 DB 原子操作內，
+  // 避免公開頁渲染完成、遞增執行前這極短空窗被下架/軟刪除卻仍計數。
+  await prisma.page.updateMany({
+    where: { id, deletedAt: null, status: { in: ["unlisted", "public"] } },
+    data: { viewCount: { increment: 1 } },
+  });
+}
+
 function isSlugUniqueConflict(error: unknown): boolean {
   if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
     return false;
