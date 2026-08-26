@@ -2,12 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const findFirst = vi.fn();
 const create = vi.fn();
+const updateMany = vi.fn();
+const findUnique = vi.fn();
+const userUpsert = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
     magicLinkToken: {
       findFirst: (...args: unknown[]) => findFirst(...args),
       create: (...args: unknown[]) => create(...args),
+      updateMany: (...args: unknown[]) => updateMany(...args),
+      findUnique: (...args: unknown[]) => findUnique(...args),
+    },
+    user: {
+      upsert: (...args: unknown[]) => userUpsert(...args),
     },
   },
 }));
@@ -19,7 +27,13 @@ vi.mock("resend", () => ({
   },
 }));
 
-import { normalizeEmail, requestMagicLink, ThrottledError } from "./auth";
+import {
+  InvalidTokenError,
+  normalizeEmail,
+  requestMagicLink,
+  ThrottledError,
+  verifyMagicLink,
+} from "./auth";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -28,6 +42,9 @@ beforeEach(() => {
   process.env.APP_BASE_URL = "https://eventcast.example.com";
   findFirst.mockReset().mockResolvedValue(null);
   create.mockReset().mockResolvedValue({});
+  updateMany.mockReset().mockResolvedValue({ count: 1 });
+  findUnique.mockReset().mockResolvedValue({ email: "user@example.com" });
+  userUpsert.mockReset().mockResolvedValue({ id: "user-1" });
   send.mockClear();
 });
 
@@ -70,7 +87,7 @@ describe("requestMagicLink", () => {
   });
 
   it("sends via Resend in production", async () => {
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     process.env.RESEND_API_KEY = "re_test_key";
     process.env.RESEND_FROM_EMAIL = "login@eventcast.example.com";
 
@@ -80,6 +97,8 @@ describe("requestMagicLink", () => {
     const args = send.mock.calls[0][0];
     expect(args.to).toBe("user@example.com");
     expect(args.text).toContain("/verify?token=");
+
+    vi.unstubAllEnvs();
   });
 
   it("throws when APP_BASE_URL is not set", async () => {
@@ -87,5 +106,27 @@ describe("requestMagicLink", () => {
     await expect(requestMagicLink("user@example.com")).rejects.toThrow(
       "APP_BASE_URL is not set",
     );
+  });
+});
+
+describe("verifyMagicLink", () => {
+  it("upserts the user and returns the userId when the token is valid", async () => {
+    const result = await verifyMagicLink("raw-token");
+
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    const where = updateMany.mock.calls[0][0].where;
+    expect(where.consumedAt).toBeNull();
+    expect(where.expiresAt.gt).toBeInstanceOf(Date);
+
+    expect(userUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { email: "user@example.com" } }),
+    );
+    expect(result).toEqual({ userId: "user-1" });
+  });
+
+  it("throws InvalidTokenError when no row matches (expired, used, or unknown)", async () => {
+    updateMany.mockResolvedValue({ count: 0 });
+    await expect(verifyMagicLink("raw-token")).rejects.toThrow(InvalidTokenError);
+    expect(userUpsert).not.toHaveBeenCalled();
   });
 });

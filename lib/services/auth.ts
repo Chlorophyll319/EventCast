@@ -6,6 +6,7 @@ const MAGIC_LINK_TTL_MS = 15 * 60 * 1000;
 const THROTTLE_WINDOW_MS = 60 * 1000;
 
 export class ThrottledError extends Error {}
+export class InvalidTokenError extends Error {}
 
 export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -31,6 +32,34 @@ export async function requestMagicLink(rawEmail: string): Promise<void> {
   });
 
   await sendMagicLinkEmail(email, buildMagicLinkUrl(rawToken));
+}
+
+export async function verifyMagicLink(rawToken: string): Promise<{ userId: string }> {
+  const tokenHash = hashToken(rawToken);
+  const now = new Date();
+
+  // Atomic conditional update: only one concurrent request can flip
+  // `consumedAt` from null, so a token can never be consumed twice.
+  const { count } = await prisma.magicLinkToken.updateMany({
+    where: { tokenHash, consumedAt: null, expiresAt: { gt: now } },
+    data: { consumedAt: now },
+  });
+  if (count !== 1) {
+    throw new InvalidTokenError("This sign-in link is invalid or has expired.");
+  }
+
+  const record = await prisma.magicLinkToken.findUnique({ where: { tokenHash } });
+  if (!record) {
+    throw new InvalidTokenError("This sign-in link is invalid or has expired.");
+  }
+
+  const user = await prisma.user.upsert({
+    where: { email: record.email },
+    update: {},
+    create: { email: record.email },
+  });
+
+  return { userId: user.id };
 }
 
 function buildMagicLinkUrl(rawToken: string): string {
