@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requestMagicLink, ThrottledError } from "@/lib/services/auth";
+import { isDevFallbackEnabled, requestMagicLink, ThrottledError } from "@/lib/services/auth";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -20,8 +20,9 @@ export async function POST(request: Request) {
     return validationError("A valid email is required.", "email");
   }
 
+  let result: { devVerifyUrl?: string };
   try {
-    await requestMagicLink(email);
+    result = await requestMagicLink(email);
   } catch (error) {
     if (error instanceof ThrottledError) {
       return NextResponse.json(
@@ -32,7 +33,15 @@ export async function POST(request: Request) {
     throw error;
   }
 
-  return NextResponse.json({ ok: true });
+  // Second guard, independent of the service: even if requestMagicLink()
+  // were ever changed incorrectly, this route never forwards a link unless
+  // isDevFallbackEnabled() is also true.
+  return NextResponse.json({
+    ok: true,
+    ...(isDevFallbackEnabled() && result.devVerifyUrl
+      ? { devVerifyUrl: result.devVerifyUrl }
+      : {}),
+  });
 }
 
 function validationError(message: string, field: string) {

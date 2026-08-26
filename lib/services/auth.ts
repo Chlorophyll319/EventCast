@@ -12,7 +12,17 @@ export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-export async function requestMagicLink(rawEmail: string): Promise<void> {
+/**
+ * Single source of truth for whether real email sending is bypassed in favor
+ * of a console/response-visible link. Both the service and the API route
+ * call this instead of duplicating the `NODE_ENV` check, so the two guards
+ * can't drift out of sync.
+ */
+export function isDevFallbackEnabled(): boolean {
+  return process.env.NODE_ENV !== "production";
+}
+
+export async function requestMagicLink(rawEmail: string): Promise<{ devVerifyUrl?: string }> {
   const email = normalizeEmail(rawEmail);
 
   const recent = await prisma.magicLinkToken.findFirst({
@@ -31,7 +41,10 @@ export async function requestMagicLink(rawEmail: string): Promise<void> {
     },
   });
 
-  await sendMagicLinkEmail(email, buildMagicLinkUrl(rawToken));
+  const verifyUrl = buildMagicLinkUrl(rawToken);
+  await sendMagicLinkEmail(email, verifyUrl);
+
+  return isDevFallbackEnabled() ? { devVerifyUrl: verifyUrl } : {};
 }
 
 export async function verifyMagicLink(rawToken: string): Promise<{ userId: string }> {
@@ -73,7 +86,7 @@ function buildMagicLinkUrl(rawToken: string): string {
 }
 
 async function sendMagicLinkEmail(email: string, verifyUrl: string): Promise<void> {
-  if (process.env.NODE_ENV !== "production") {
+  if (isDevFallbackEnabled()) {
     console.log(`[dev] Magic link for ${email}: ${verifyUrl}`);
     return;
   }

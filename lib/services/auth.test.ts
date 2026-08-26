@@ -29,6 +29,7 @@ vi.mock("resend", () => ({
 
 import {
   InvalidTokenError,
+  isDevFallbackEnabled,
   normalizeEmail,
   requestMagicLink,
   ThrottledError,
@@ -58,6 +59,18 @@ describe("normalizeEmail", () => {
   });
 });
 
+describe("isDevFallbackEnabled", () => {
+  it("is true outside production", () => {
+    expect(isDevFallbackEnabled()).toBe(true);
+  });
+
+  it("is false in production", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    expect(isDevFallbackEnabled()).toBe(false);
+    vi.unstubAllEnvs();
+  });
+});
+
 describe("requestMagicLink", () => {
   it("creates a MagicLinkToken with a 15 minute expiry", async () => {
     const before = Date.now();
@@ -78,25 +91,28 @@ describe("requestMagicLink", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("logs to console instead of sending email outside production", async () => {
+  it("logs to console and returns devVerifyUrl outside production", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    await requestMagicLink("user@example.com");
+    const result = await requestMagicLink("user@example.com");
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("/verify?token="));
     expect(send).not.toHaveBeenCalled();
+    expect(result.devVerifyUrl).toContain("/verify?token=");
     logSpy.mockRestore();
   });
 
-  it("sends via Resend in production", async () => {
+  it("sends via Resend and does not return devVerifyUrl in production", async () => {
     vi.stubEnv("NODE_ENV", "production");
     process.env.RESEND_API_KEY = "re_test_key";
     process.env.RESEND_FROM_EMAIL = "login@eventcast.example.com";
 
-    await requestMagicLink("user@example.com");
+    const result = await requestMagicLink("user@example.com");
 
     expect(send).toHaveBeenCalledTimes(1);
     const args = send.mock.calls[0][0];
     expect(args.to).toBe("user@example.com");
     expect(args.text).toContain("/verify?token=");
+    expect(result).toEqual({});
+    expect(result.devVerifyUrl).toBeUndefined();
 
     vi.unstubAllEnvs();
   });
