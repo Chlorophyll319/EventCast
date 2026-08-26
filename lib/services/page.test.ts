@@ -32,7 +32,16 @@ vi.mock("./slug", () => ({
 }));
 
 import { Prisma } from "../generated/prisma/client";
-import { createPage, deletePage, getPageById, listPages, setPageStatus, updatePage } from "./page";
+import {
+  createPage,
+  deletePage,
+  getPageById,
+  getPageBySlug,
+  incrementPageViewCount,
+  listPages,
+  setPageStatus,
+  updatePage,
+} from "./page";
 import { PageLimitError, PageNotFoundError, PageValidationError } from "./pageErrors";
 
 function tx() {
@@ -234,6 +243,59 @@ describe("getPageById", () => {
     const result = await getPageById("user-1", "someone-elses-page");
 
     expect(result).toBeNull();
+  });
+});
+
+describe("getPageBySlug", () => {
+  it("returns the page with tags and events sorted by startTime when found", async () => {
+    findFirst.mockResolvedValue({
+      ...pageRecord(),
+      tags: [{ id: "tag-1", label: "顧攤", color: "orange" }],
+      events: [
+        {
+          id: "event-1",
+          name: "早班",
+          startTime: new Date("2026-09-01T02:00:00.000Z"),
+          endTime: null,
+          tagId: "tag-1",
+          location: null,
+          note: null,
+        },
+      ],
+    });
+
+    const result = await getPageBySlug("abcd1234");
+
+    expect(result?.slug).toBe("abcd1234");
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { slug: "abcd1234", deletedAt: null },
+        include: { tags: true, events: { orderBy: { startTime: "asc" } } },
+      }),
+    );
+  });
+
+  it("returns null when no page matches the slug, without filtering by userId", async () => {
+    findFirst.mockResolvedValue(null);
+
+    const result = await getPageBySlug("missing-slug");
+
+    expect(result).toBeNull();
+    const [callArgs] = findFirst.mock.calls[0] as [{ where: Record<string, unknown> }];
+    expect(callArgs.where).not.toHaveProperty("userId");
+  });
+});
+
+describe("incrementPageViewCount", () => {
+  it("atomically increments viewCount only for active (non-deleted, visible) pages", async () => {
+    updateMany.mockResolvedValue({ count: 1 });
+
+    await incrementPageViewCount("page-1");
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: "page-1", deletedAt: null, status: { in: ["unlisted", "public"] } },
+      data: { viewCount: { increment: 1 } },
+    });
   });
 });
 
