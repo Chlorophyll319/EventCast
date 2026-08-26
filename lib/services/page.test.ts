@@ -7,6 +7,11 @@ const eventCreate = vi.fn();
 const transaction = vi.fn();
 const findMany = vi.fn();
 const findFirst = vi.fn();
+const txPageFindFirst = vi.fn();
+const txPageUpdate = vi.fn();
+const txTagUpdate = vi.fn();
+const txEventUpdate = vi.fn();
+const txEventDeleteMany = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
@@ -25,14 +30,14 @@ vi.mock("./slug", () => ({
 }));
 
 import { Prisma } from "../generated/prisma/client";
-import { createPage, getPageById, listPages } from "./page";
-import { PageLimitError } from "./pageErrors";
+import { createPage, getPageById, listPages, updatePage } from "./page";
+import { PageLimitError, PageNotFoundError, PageValidationError } from "./pageErrors";
 
 function tx() {
   return {
-    page: { count, create: pageCreate },
-    tag: { create: tagCreate },
-    event: { create: eventCreate },
+    page: { count, create: pageCreate, findFirst: txPageFindFirst, update: txPageUpdate },
+    tag: { create: tagCreate, update: txTagUpdate },
+    event: { create: eventCreate, update: txEventUpdate, deleteMany: txEventDeleteMany },
   };
 }
 
@@ -77,6 +82,11 @@ beforeEach(() => {
   generateUniquePageSlug.mockReset();
   findMany.mockReset();
   findFirst.mockReset();
+  txPageFindFirst.mockReset();
+  txPageUpdate.mockReset();
+  txTagUpdate.mockReset();
+  txEventUpdate.mockReset();
+  txEventDeleteMany.mockReset();
 
   generateUniquePageSlug.mockResolvedValue("abcd1234");
   transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(tx()));
@@ -221,5 +231,188 @@ describe("getPageById", () => {
     const result = await getPageById("user-1", "someone-elses-page");
 
     expect(result).toBeNull();
+  });
+});
+
+describe("updatePage", () => {
+  function existingPageRecord(overrides: Record<string, unknown> = {}) {
+    return {
+      ...pageRecord(),
+      tags: [],
+      events: [],
+      ...overrides,
+    };
+  }
+
+  function expectFieldError(promise: Promise<unknown>, field: string) {
+    return promise.then(
+      () => {
+        throw new Error("expected PageValidationError to be thrown");
+      },
+      (error) => {
+        expect(error).toBeInstanceOf(PageValidationError);
+        expect((error as PageValidationError).field).toBe(field);
+      },
+    );
+  }
+
+  it("throws PageNotFoundError when the page does not exist, is not owned by the user, or is soft-deleted", async () => {
+    txPageFindFirst.mockResolvedValueOnce(null);
+
+    await expect(updatePage("user-1", "page-1", { title: "新標題" })).rejects.toThrow(PageNotFoundError);
+    expect(txPageFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "page-1", userId: "user-1", deletedAt: null } }),
+    );
+  });
+
+  it("updates only the page fields that are provided", async () => {
+    txPageFindFirst
+      .mockResolvedValueOnce(existingPageRecord())
+      .mockResolvedValueOnce(existingPageRecord({ title: "新標題" }));
+
+    const result = await updatePage("user-1", "page-1", { title: "新標題" });
+
+    expect(txPageUpdate).toHaveBeenCalledWith({ where: { id: "page-1" }, data: { title: "新標題" } });
+    expect(result.title).toBe("新標題");
+  });
+
+  it("creates a new tag and event when no id is provided", async () => {
+    txPageFindFirst.mockResolvedValueOnce(existingPageRecord()).mockResolvedValueOnce(existingPageRecord());
+    tagCreate.mockResolvedValue({ id: "tag-new", label: "VIP", color: "purple" });
+    eventCreate.mockResolvedValue({
+      id: "event-new",
+      name: "新行程",
+      startTime: new Date("2026-09-01T08:00:00.000Z"),
+      endTime: null,
+      tagId: "tag-new",
+      location: null,
+      note: null,
+    });
+
+    await updatePage("user-1", "page-1", {
+      tags: [{ label: "VIP", color: "purple" }],
+      events: [{ name: "新行程", startTime: "2026-09-01T08:00:00.000Z", tagLabel: "VIP" }],
+    });
+
+    expect(tagCreate).toHaveBeenCalledWith({ data: { pageId: "page-1", label: "VIP", color: "purple" } });
+    expect(eventCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({ pageId: "page-1", name: "新行程", tagId: "tag-new" }),
+    });
+  });
+
+  it("updates an existing tag and resolves a renamed tagLabel for an existing event", async () => {
+    txPageFindFirst
+      .mockResolvedValueOnce(
+        existingPageRecord({
+          tags: [{ id: "tag-1", label: "VIP", color: "purple" }],
+          events: [
+            {
+              id: "event-1",
+              name: "早班",
+              startTime: new Date("2026-09-01T08:00:00.000Z"),
+              endTime: null,
+              tagId: "tag-1",
+              location: null,
+              note: null,
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(existingPageRecord());
+
+    await updatePage("user-1", "page-1", {
+      tags: [{ id: "tag-1", label: "VIP2", color: "blue" }],
+      events: [{ id: "event-1", name: "早班", startTime: "2026-09-01T08:00:00.000Z", tagLabel: "VIP2" }],
+    });
+
+    expect(txTagUpdate).toHaveBeenCalledWith({ where: { id: "tag-1" }, data: { label: "VIP2", color: "blue" } });
+    expect(txEventUpdate).toHaveBeenCalledWith({
+      where: { id: "event-1" },
+      data: expect.objectContaining({ tagId: "tag-1" }),
+    });
+  });
+
+  it("deletes events listed in removeEventIds, scoped to this page", async () => {
+    txPageFindFirst
+      .mockResolvedValueOnce(
+        existingPageRecord({
+          events: [
+            {
+              id: "event-1",
+              name: "早班",
+              startTime: new Date("2026-09-01T08:00:00.000Z"),
+              endTime: null,
+              tagId: null,
+              location: null,
+              note: null,
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(existingPageRecord());
+
+    await updatePage("user-1", "page-1", { removeEventIds: ["event-1"] });
+
+    expect(txEventDeleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ["event-1"] }, pageId: "page-1" },
+    });
+  });
+
+  it("rejects a tag id that does not belong to this page", async () => {
+    txPageFindFirst.mockResolvedValueOnce(existingPageRecord());
+
+    await expectFieldError(
+      updatePage("user-1", "page-1", { tags: [{ id: "other-page-tag", label: "VIP", color: "purple" }] }),
+      "tags[0].id",
+    );
+  });
+
+  it("rejects a removeEventIds entry that does not belong to this page", async () => {
+    txPageFindFirst.mockResolvedValueOnce(existingPageRecord());
+
+    await expectFieldError(
+      updatePage("user-1", "page-1", { removeEventIds: ["other-page-event"] }),
+      "removeEventIds[0]",
+    );
+  });
+
+  it("rejects an event tagLabel that does not resolve to any tag on this page", async () => {
+    txPageFindFirst.mockResolvedValueOnce(existingPageRecord());
+
+    await expectFieldError(
+      updatePage("user-1", "page-1", {
+        events: [{ name: "早班", startTime: "2026-09-01T08:00:00.000Z", tagLabel: "不存在" }],
+      }),
+      "events[0].tagLabel",
+    );
+  });
+
+  it("rejects when renaming a tag collides with another existing tag's label", async () => {
+    txPageFindFirst.mockResolvedValueOnce(
+      existingPageRecord({
+        tags: [
+          { id: "tag-1", label: "A", color: "red" },
+          { id: "tag-2", label: "B", color: "blue" },
+        ],
+      }),
+    );
+
+    await expect(
+      updatePage("user-1", "page-1", { tags: [{ id: "tag-1", label: "B", color: "red" }] }),
+    ).rejects.toThrow(PageValidationError);
+  });
+
+  it("wraps a Prisma unique constraint conflict on tag label into a PageValidationError", async () => {
+    txPageFindFirst.mockResolvedValueOnce(existingPageRecord());
+    const conflictError = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+      code: "P2002",
+      clientVersion: "test",
+      meta: { target: ["pageId", "label"] },
+    });
+    tagCreate.mockRejectedValueOnce(conflictError);
+
+    await expect(
+      updatePage("user-1", "page-1", { tags: [{ label: "VIP", color: "purple" }] }),
+    ).rejects.toThrow(PageValidationError);
   });
 });

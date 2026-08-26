@@ -1,8 +1,8 @@
 import { Prisma } from "../generated/prisma/client";
 import type { PageStatus, PageTemplate, TagColor } from "../generated/prisma/enums";
 import { prisma } from "../prisma";
-import { PageLimitError } from "./pageErrors";
-import { validateCreatePageInput } from "./pageValidation";
+import { PageLimitError, PageNotFoundError, PageValidationError } from "./pageErrors";
+import { validateCreatePageInput, validateUpdatePageInput } from "./pageValidation";
 import { generateUniquePageSlug, SlugGenerationError } from "./slug";
 
 const PAGE_LIMIT = 10;
@@ -196,4 +196,177 @@ function isSlugUniqueConflict(error: unknown): boolean {
   }
   const target = error.meta?.target;
   return Array.isArray(target) && target.includes("slug");
+}
+
+export async function updatePage(userId: string, id: string, rawInput: unknown): Promise<PageDetail> {
+  const input = validateUpdatePageInput(rawInput);
+  const tags = input.tags ?? [];
+  const events = input.events ?? [];
+  const removeEventIds = input.removeEventIds ?? [];
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const existing = await tx.page.findFirst({
+        where: { id, userId, deletedAt: null },
+        include: { tags: true, events: true },
+      });
+      if (!existing) {
+        throw new PageNotFoundError("Page not found.");
+      }
+
+      const existingTagIds = new Set(existing.tags.map((tag) => tag.id));
+      const existingEventIds = new Set(existing.events.map((event) => event.id));
+
+      tags.forEach((tag, index) => {
+        if (tag.id !== undefined && !existingTagIds.has(tag.id)) {
+          throw new PageValidationError(`Tag id '${tag.id}' does not belong to this page.`, `tags[${index}].id`);
+        }
+      });
+      events.forEach((event, index) => {
+        if (event.id !== undefined && !existingEventIds.has(event.id)) {
+          throw new PageValidationError(
+            `Event id '${event.id}' does not belong to this page.`,
+            `events[${index}].id`,
+          );
+        }
+      });
+      removeEventIds.forEach((eventId, index) => {
+        if (!existingEventIds.has(eventId)) {
+          throw new PageValidationError(
+            `Event id '${eventId}' does not belong to this page.`,
+            `removeEventIds[${index}]`,
+          );
+        }
+      });
+
+      // 最終 label 集合（既有 tags 套用本次修改後，再加上本次新增）需唯一，
+      // 才能保證後續 events[].tagLabel 解析與 DB 的 @@unique([pageId, label]) 一致。
+      const finalLabelByTagId = new Map<string, string>(existing.tags.map((tag) => [tag.id, tag.label]));
+      for (const tag of tags) {
+        if (tag.id !== undefined) {
+          finalLabelByTagId.set(tag.id, tag.label);
+        }
+      }
+      const seenFinalLabels = new Set<string>();
+      for (const label of finalLabelByTagId.values()) {
+        if (seenFinalLabels.has(label)) {
+          throw new PageValidationError(`Duplicate tag label '${label}' after update.`, "tags");
+        }
+        seenFinalLabels.add(label);
+      }
+      for (const tag of tags) {
+        if (tag.id === undefined) {
+          if (seenFinalLabels.has(tag.label)) {
+            throw new PageValidationError(`Duplicate tag label '${tag.label}'.`, "tags");
+          }
+          seenFinalLabels.add(tag.label);
+        }
+      }
+
+      // 依序套用 tag 修改/新增，同時維護「最終 label → tagId」map 供 events[].tagLabel 解析用。
+      const labelToTagId = new Map<string, string>(existing.tags.map((tag) => [tag.label, tag.id]));
+      for (const tag of tags) {
+        if (tag.id === undefined) {
+          continue;
+        }
+        const previous = existing.tags.find((existingTag) => existingTag.id === tag.id);
+        await tx.tag.update({ where: { id: tag.id }, data: { label: tag.label, color: tag.color } });
+        if (previous !== undefined) {
+          labelToTagId.delete(previous.label);
+        }
+        labelToTagId.set(tag.label, tag.id);
+      }
+      for (const tag of tags) {
+        if (tag.id !== undefined) {
+          continue;
+        }
+        const created = await tx.tag.create({ data: { pageId: id, label: tag.label, color: tag.color } });
+        labelToTagId.set(tag.label, created.id);
+      }
+
+      events.forEach((event, index) => {
+        if (event.tagLabel !== null && !labelToTagId.has(event.tagLabel)) {
+          throw new PageValidationError(
+            `tagLabel '${event.tagLabel}' does not match any tag on this page.`,
+            `events[${index}].tagLabel`,
+          );
+        }
+      });
+
+      for (const event of events) {
+        const tagId = event.tagLabel !== null ? (labelToTagId.get(event.tagLabel) ?? null) : null;
+        const eventData = {
+          name: event.name,
+          startTime: event.startTime,
+          endTime: event.endTime,
+          tagId,
+          location: event.location,
+          note: event.note,
+        };
+        if (event.id !== undefined) {
+          await tx.event.update({ where: { id: event.id }, data: eventData });
+        } else {
+          await tx.event.create({ data: { pageId: id, ...eventData } });
+        }
+      }
+
+      if (removeEventIds.length > 0) {
+        await tx.event.deleteMany({ where: { id: { in: removeEventIds }, pageId: id } });
+      }
+
+      const pageUpdateData: Prisma.PageUpdateInput = {};
+      if (input.title !== undefined) {
+        pageUpdateData.title = input.title;
+      }
+      if (input.dateRangeStart !== undefined) {
+        pageUpdateData.dateRangeStart = input.dateRangeStart;
+      }
+      if (input.dateRangeEnd !== undefined) {
+        pageUpdateData.dateRangeEnd = input.dateRangeEnd;
+      }
+      if (input.template !== undefined) {
+        pageUpdateData.template = input.template;
+      }
+      if (Object.keys(pageUpdateData).length > 0) {
+        await tx.page.update({ where: { id }, data: pageUpdateData });
+      }
+
+      const finalPage = await tx.page.findFirst({
+        where: { id },
+        include: { tags: true, events: { orderBy: { startTime: "asc" } } },
+      });
+      if (!finalPage) {
+        throw new PageNotFoundError("Page not found.");
+      }
+
+      return {
+        id: finalPage.id,
+        slug: finalPage.slug,
+        title: finalPage.title,
+        dateRangeStart: finalPage.dateRangeStart,
+        dateRangeEnd: finalPage.dateRangeEnd,
+        template: finalPage.template,
+        status: finalPage.status,
+        timezone: finalPage.timezone,
+        viewCount: finalPage.viewCount,
+        createdAt: finalPage.createdAt,
+        updatedAt: finalPage.updatedAt,
+        tags: finalPage.tags,
+        events: finalPage.events,
+      };
+    });
+  } catch (error) {
+    if (isTagLabelUniqueConflict(error)) {
+      throw new PageValidationError("Tag label must be unique within this page.", "tags");
+    }
+    throw error;
+  }
+}
+
+function isTagLabelUniqueConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+    return false;
+  }
+  const target = error.meta?.target;
+  return Array.isArray(target) && target.includes("label");
 }
