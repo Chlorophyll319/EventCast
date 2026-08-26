@@ -13,7 +13,8 @@ vi.mock("../prisma", () => ({
   },
 }));
 
-import { InsufficientScopeError, UnauthorizedError, verifyApiToken } from "./apiAuth";
+import { InsufficientScopeError, RateLimitedError, UnauthorizedError, verifyApiToken } from "./apiAuth";
+import { _resetRateLimitStoreForTests } from "./rateLimit";
 
 function request(headers: Record<string, string> = {}) {
   return new Request("https://eventcast.example.com/api/pages", { headers });
@@ -23,6 +24,7 @@ beforeEach(() => {
   process.env.TOKEN_HASH_SECRET = "test-secret";
   findUnique.mockReset();
   update.mockReset().mockResolvedValue({});
+  _resetRateLimitStoreForTests();
 });
 
 describe("verifyApiToken", () => {
@@ -106,5 +108,85 @@ describe("verifyApiToken", () => {
     });
     await verifyApiToken(request({ authorization: "Bearer ec_live_x" }), "read");
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it("throws RateLimitedError once a token exceeds 60 requests within the window", async () => {
+    findUnique.mockResolvedValue({
+      id: "token-1",
+      userId: "user-1",
+      scope: "read",
+      revokedAt: null,
+      lastUsedAt: null,
+    });
+    for (let i = 0; i < 60; i++) {
+      await verifyApiToken(request({ authorization: "Bearer ec_live_x" }), "read");
+    }
+    update.mockClear();
+
+    await expect(
+      verifyApiToken(request({ authorization: "Bearer ec_live_x" }), "read"),
+    ).rejects.toThrow(RateLimitedError);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("does not consume rate limit budget for a missing Authorization header", async () => {
+    for (let i = 0; i < 60; i++) {
+      await expect(verifyApiToken(request(), "read")).rejects.toThrow(UnauthorizedError);
+    }
+    findUnique.mockResolvedValue({
+      id: "token-1",
+      userId: "user-1",
+      scope: "read",
+      revokedAt: null,
+      lastUsedAt: null,
+    });
+    await expect(
+      verifyApiToken(request({ authorization: "Bearer ec_live_x" }), "read"),
+    ).resolves.toEqual({ tokenId: "token-1", userId: "user-1", scope: "read" });
+  });
+
+  it("does not consume rate limit budget for a revoked token", async () => {
+    findUnique.mockResolvedValue({
+      id: "token-1",
+      userId: "user-1",
+      scope: "write",
+      revokedAt: new Date(),
+      lastUsedAt: null,
+    });
+    for (let i = 0; i < 60; i++) {
+      await expect(
+        verifyApiToken(request({ authorization: "Bearer ec_live_x" }), "read"),
+      ).rejects.toThrow(UnauthorizedError);
+    }
+
+    findUnique.mockResolvedValue({
+      id: "token-1",
+      userId: "user-1",
+      scope: "write",
+      revokedAt: null,
+      lastUsedAt: null,
+    });
+    await expect(
+      verifyApiToken(request({ authorization: "Bearer ec_live_x" }), "read"),
+    ).resolves.toEqual({ tokenId: "token-1", userId: "user-1", scope: "write" });
+  });
+
+  it("does not consume rate limit budget for insufficient scope", async () => {
+    findUnique.mockResolvedValue({
+      id: "token-1",
+      userId: "user-1",
+      scope: "read",
+      revokedAt: null,
+      lastUsedAt: null,
+    });
+    for (let i = 0; i < 60; i++) {
+      await expect(
+        verifyApiToken(request({ authorization: "Bearer ec_live_x" }), "write"),
+      ).rejects.toThrow(InsufficientScopeError);
+    }
+
+    await expect(
+      verifyApiToken(request({ authorization: "Bearer ec_live_x" }), "read"),
+    ).resolves.toEqual({ tokenId: "token-1", userId: "user-1", scope: "read" });
   });
 });

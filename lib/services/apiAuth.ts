@@ -1,11 +1,15 @@
 import type { ApiTokenScope } from "../generated/prisma/enums";
 import { prisma } from "../prisma";
 import { hashToken } from "./authCrypto";
+import { checkRateLimit } from "./rateLimit";
 
 const LAST_USED_UPDATE_THRESHOLD_MS = 5 * 60 * 1000;
+const RATE_LIMIT_MAX_REQUESTS = 60;
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 
 export class UnauthorizedError extends Error {}
 export class InsufficientScopeError extends Error {}
+export class RateLimitedError extends Error {}
 
 export interface VerifiedApiToken {
   tokenId: string;
@@ -29,6 +33,10 @@ export async function verifyApiToken(
 
   if (!hasRequiredScope(record.scope, requiredScope)) {
     throw new InsufficientScopeError(`This token does not have the '${requiredScope}' scope.`);
+  }
+
+  if (!checkRateLimit(record.id, RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MS)) {
+    throw new RateLimitedError("Rate limit exceeded for this API token.");
   }
 
   touchLastUsedAt(record.id, record.lastUsedAt);
