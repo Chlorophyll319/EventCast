@@ -89,14 +89,26 @@ enum ApiTokenScope {
 }
 
 model ApiToken {
-  id         String        @id @default(cuid())
-  userId     String
-  tokenHash  String        @unique
-  scope      ApiTokenScope
-  label      String?
-  createdAt  DateTime      @default(now())
-  lastUsedAt DateTime?
-  revokedAt  DateTime?
+  id          String        @id @default(cuid())
+  userId      String
+  tokenPrefix String
+  tokenHash   String        @unique
+  scope       ApiTokenScope
+  label       String?
+  createdAt   DateTime      @default(now())
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model MagicLinkToken {
+  id         String    @id @default(cuid())
+  email      String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([email, createdAt])
 }
