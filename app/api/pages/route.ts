@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { createPage, listPages } from "@/lib/services/page";
-import { PageLimitError, PageValidationError } from "@/lib/services/pageErrors";
-import { authenticate, withPublicUrl } from "./shared";
+import { authenticate, mapPageError, validationError, withPublicUrl } from "./shared";
 
 export async function POST(request: Request) {
   const auth = await authenticate(request, "write");
@@ -32,24 +31,4 @@ export async function GET(request: Request) {
 
   const pages = await listPages(auth.userId);
   return NextResponse.json({ pages: pages.map(withPublicUrl) });
-}
-
-function mapPageError(error: unknown): NextResponse {
-  if (error instanceof PageValidationError) {
-    return NextResponse.json(
-      { error: { code: "VALIDATION_ERROR", message: error.message, field: error.field } },
-      { status: 422 },
-    );
-  }
-  if (error instanceof PageLimitError) {
-    return NextResponse.json(
-      { error: { code: "VALIDATION_ERROR", message: error.message } },
-      { status: 422 },
-    );
-  }
-  throw error;
-}
-
-function validationError(message: string, field: string): NextResponse {
-  return NextResponse.json({ error: { code: "VALIDATION_ERROR", message, field } }, { status: 422 });
 }

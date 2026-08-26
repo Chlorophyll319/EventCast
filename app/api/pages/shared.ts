@@ -7,6 +7,7 @@ import {
   verifyApiToken,
   type VerifiedApiToken,
 } from "@/lib/services/apiAuth";
+import { PageLimitError, PageNotFoundError, PageValidationError } from "@/lib/services/pageErrors";
 
 export async function authenticate(
   request: Request,
@@ -33,4 +34,30 @@ export async function authenticate(
 
 export function withPublicUrl<T extends { slug: string }>(page: T): T & { url: string } {
   return { ...page, url: `${process.env.APP_BASE_URL}/p/${page.slug}` };
+}
+
+export function mapPageError(error: unknown): NextResponse {
+  if (error instanceof PageValidationError) {
+    return NextResponse.json(
+      { error: { code: "VALIDATION_ERROR", message: error.message, field: error.field } },
+      { status: 422 },
+    );
+  }
+  if (error instanceof PageLimitError) {
+    return NextResponse.json(
+      { error: { code: "VALIDATION_ERROR", message: error.message } },
+      { status: 422 },
+    );
+  }
+  if (error instanceof PageNotFoundError) {
+    return NextResponse.json(
+      { error: { code: "NOT_FOUND", message: error.message } },
+      { status: 404 },
+    );
+  }
+  throw error;
+}
+
+export function validationError(message: string, field: string): NextResponse {
+  return NextResponse.json({ error: { code: "VALIDATION_ERROR", message, field } }, { status: 422 });
 }
