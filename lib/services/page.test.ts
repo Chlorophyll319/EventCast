@@ -5,10 +5,16 @@ const pageCreate = vi.fn();
 const tagCreate = vi.fn();
 const eventCreate = vi.fn();
 const transaction = vi.fn();
+const findMany = vi.fn();
+const findFirst = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
     $transaction: (...args: unknown[]) => transaction(...args),
+    page: {
+      findMany: (...args: unknown[]) => findMany(...args),
+      findFirst: (...args: unknown[]) => findFirst(...args),
+    },
   },
 }));
 
@@ -19,7 +25,7 @@ vi.mock("./slug", () => ({
 }));
 
 import { Prisma } from "../generated/prisma/client";
-import { createPage } from "./page";
+import { createPage, getPageById, listPages } from "./page";
 import { PageLimitError } from "./pageErrors";
 
 function tx() {
@@ -69,6 +75,8 @@ beforeEach(() => {
   eventCreate.mockReset();
   transaction.mockReset();
   generateUniquePageSlug.mockReset();
+  findMany.mockReset();
+  findFirst.mockReset();
 
   generateUniquePageSlug.mockResolvedValue("abcd1234");
   transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(tx()));
@@ -158,5 +166,60 @@ describe("createPage", () => {
   it("propagates validation errors without touching the database", async () => {
     await expect(createPage("user-1", validBody({ title: undefined }))).rejects.toThrow();
     expect(transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("listPages", () => {
+  it("queries by userId, excludes soft-deleted pages, and orders by createdAt desc", async () => {
+    findMany.mockResolvedValue([pageRecord({ id: "page-2" }), pageRecord({ id: "page-1" })]);
+
+    const result = await listPages("user-1");
+
+    expect(result.map((page) => page.id)).toEqual(["page-2", "page-1"]);
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: "user-1", deletedAt: null },
+        orderBy: { createdAt: "desc" },
+      }),
+    );
+  });
+});
+
+describe("getPageById", () => {
+  it("returns the page with tags and events sorted by startTime when found", async () => {
+    findFirst.mockResolvedValue({
+      ...pageRecord(),
+      tags: [{ id: "tag-1", label: "顧攤", color: "orange" }],
+      events: [
+        {
+          id: "event-1",
+          name: "早班",
+          startTime: new Date("2026-09-01T02:00:00.000Z"),
+          endTime: null,
+          tagId: "tag-1",
+          location: null,
+          note: null,
+        },
+      ],
+    });
+
+    const result = await getPageById("user-1", "page-1");
+
+    expect(result?.tags).toEqual([{ id: "tag-1", label: "顧攤", color: "orange" }]);
+    expect(result?.events).toHaveLength(1);
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "page-1", userId: "user-1", deletedAt: null },
+        include: { tags: true, events: { orderBy: { startTime: "asc" } } },
+      }),
+    );
+  });
+
+  it("returns null when the page does not exist or belongs to another user", async () => {
+    findFirst.mockResolvedValue(null);
+
+    const result = await getPageById("user-1", "someone-elses-page");
+
+    expect(result).toBeNull();
   });
 });

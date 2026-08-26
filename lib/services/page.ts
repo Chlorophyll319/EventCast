@@ -125,6 +125,71 @@ export async function createPage(userId: string, rawInput: unknown): Promise<Pag
   throw lastError instanceof Error ? lastError : new SlugGenerationError("Failed to create page.");
 }
 
+export interface PageSummary {
+  id: string;
+  slug: string;
+  title: string;
+  dateRangeStart: Date;
+  dateRangeEnd: Date;
+  template: PageTemplate;
+  status: PageStatus;
+  timezone: string;
+  viewCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export async function listPages(userId: string): Promise<PageSummary[]> {
+  return prisma.page.findMany({
+    where: { userId, deletedAt: null },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      slug: true,
+      title: true,
+      dateRangeStart: true,
+      dateRangeEnd: true,
+      template: true,
+      status: true,
+      timezone: true,
+      viewCount: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+}
+
+export async function getPageById(userId: string, id: string): Promise<PageDetail | null> {
+  // id/userId/deletedAt 一起查，查無論是「不存在」或「非本人所有」一律回傳 null，
+  // 由呼叫端統一轉成 404，不洩漏其他使用者的頁面是否存在。
+  const page = await prisma.page.findFirst({
+    where: { id, userId, deletedAt: null },
+    include: {
+      tags: true,
+      events: { orderBy: { startTime: "asc" } },
+    },
+  });
+  if (!page) {
+    return null;
+  }
+
+  return {
+    id: page.id,
+    slug: page.slug,
+    title: page.title,
+    dateRangeStart: page.dateRangeStart,
+    dateRangeEnd: page.dateRangeEnd,
+    template: page.template,
+    status: page.status,
+    timezone: page.timezone,
+    viewCount: page.viewCount,
+    createdAt: page.createdAt,
+    updatedAt: page.updatedAt,
+    tags: page.tags,
+    events: page.events,
+  };
+}
+
 function isSlugUniqueConflict(error: unknown): boolean {
   if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
     return false;
