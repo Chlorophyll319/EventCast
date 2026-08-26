@@ -14,7 +14,11 @@ describe("signSession / verifySession", () => {
 
   it("rejects a tampered token", async () => {
     const token = await signSession("user-123");
-    const tampered = `${token.slice(0, -1)}${token.at(-1) === "a" ? "b" : "a"}`;
+    // Flip a character in the middle of the signature segment rather than
+    // the last character: base64url's final char can have ignored padding
+    // bits, so tampering it can decode to the same bytes and pass verification.
+    const mid = Math.floor(token.length / 2);
+    const tampered = `${token.slice(0, mid)}${token[mid] === "a" ? "b" : "a"}${token.slice(mid + 1)}`;
     expect(await verifySession(tampered)).toBeNull();
   });
 
