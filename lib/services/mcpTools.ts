@@ -162,6 +162,8 @@ export function findMcpTool(name: string): McpToolDefinition | undefined {
 }
 
 export interface McpToolErrorResult {
+  // MCP SDK 的 CallToolResult 型別帶 index signature（loose object），回傳值需相容
+  [key: string]: unknown;
   content: Array<{ type: "text"; text: string }>;
   structuredContent: {
     error: { code: "VALIDATION_ERROR" | "NOT_FOUND"; message: string; field?: string };
