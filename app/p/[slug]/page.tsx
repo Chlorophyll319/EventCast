@@ -2,8 +2,9 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { cache } from "react";
 import type { TagColor } from "@/lib/generated/prisma/enums";
+import type { PageDetail } from "@/lib/services/page";
 import { getPageBySlug, incrementPageViewCount } from "@/lib/services/page";
-import { buildMetaDescription, formatDateRange, formatEventTime, resolveRobots } from "./format";
+import { buildMetaDescription, formatDateRange, formatEventTime, groupEventsByDay, resolveRobots } from "./format";
 
 // viewCount 每次渲染都要遞增，公開頁不可被靜態化/快取。
 export const dynamic = "force-dynamic";
@@ -82,40 +83,93 @@ export default async function PublicPage({
   // 僅在確定要渲染活動內容時才遞增，不可在 generateMetadata 或其他分支觸發。
   await incrementPageViewCount(page.id);
 
-  // template === "lineup" 的 Page 本票仍共用同一套 timeline 渲染，直到專屬版型票補上。
-  const tagById = new Map(page.tags.map((tag) => [tag.id, tag]));
-
   return (
     <main className="mx-auto flex max-w-2xl flex-1 flex-col gap-6 px-4 py-10">
       <header className="flex flex-col gap-1">
         <h1 className="text-2xl font-semibold">{page.title}</h1>
         <p className="text-gray-600">{formatDateRange(page.dateRangeStart, page.dateRangeEnd, page.timezone)}</p>
       </header>
-      <ol className="flex flex-col gap-4">
-        {page.events.map((event) => {
-          const tag = event.tagId ? tagById.get(event.tagId) : undefined;
-          const time = formatEventTime(event.startTime, event.endTime, page.timezone);
-          return (
-            <li key={event.id}>
-              <article className="rounded border p-4">
-                <div className="flex items-center justify-between gap-2">
-                  <time dateTime={time.startIso} className="text-sm text-gray-500">
-                    {time.display}
-                  </time>
-                  {tag && (
-                    <span className={`rounded-full px-2 py-0.5 text-xs ${TAG_COLOR_CLASS[tag.color]}`}>
-                      {tag.label}
-                    </span>
-                  )}
-                </div>
-                <h2 className="mt-1 font-medium">{event.name}</h2>
-                {event.location && <p className="text-sm text-gray-600">{event.location}</p>}
-                {event.note && <p className="mt-1 text-sm text-gray-500">{event.note}</p>}
-              </article>
-            </li>
-          );
-        })}
-      </ol>
+      {page.template === "lineup" ? (
+        <LineupView events={page.events} tags={page.tags} timezone={page.timezone} />
+      ) : (
+        <TimelineView events={page.events} tags={page.tags} timezone={page.timezone} />
+      )}
     </main>
+  );
+}
+
+type EventListProps = {
+  events: PageDetail["events"];
+  tags: PageDetail["tags"];
+  timezone: string;
+};
+
+function TimelineView({ events, tags, timezone }: EventListProps) {
+  const tagById = new Map(tags.map((tag) => [tag.id, tag]));
+
+  return (
+    <ol className="flex flex-col gap-4">
+      {events.map((event) => {
+        const tag = event.tagId ? tagById.get(event.tagId) : undefined;
+        const time = formatEventTime(event.startTime, event.endTime, timezone);
+        return (
+          <li key={event.id}>
+            <article className="rounded border p-4">
+              <div className="flex items-center justify-between gap-2">
+                <time dateTime={time.startIso} className="text-sm text-gray-500">
+                  {time.display}
+                </time>
+                {tag && (
+                  <span className={`rounded-full px-2 py-0.5 text-xs ${TAG_COLOR_CLASS[tag.color]}`}>
+                    {tag.label}
+                  </span>
+                )}
+              </div>
+              <h2 className="mt-1 font-medium">{event.name}</h2>
+              {event.location && <p className="text-sm text-gray-600">{event.location}</p>}
+              {event.note && <p className="mt-1 text-sm text-gray-500">{event.note}</p>}
+            </article>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function LineupView({ events, tags, timezone }: EventListProps) {
+  const tagById = new Map(tags.map((tag) => [tag.id, tag]));
+  const dayGroups = groupEventsByDay(events, timezone);
+
+  return (
+    <div className="flex flex-col gap-6">
+      {dayGroups.map((group) => (
+        <section key={group.dayLabel} className="flex flex-col gap-3">
+          <h2 className="text-sm font-semibold text-gray-500">{group.dayLabel}</h2>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {group.events.map((event) => {
+              const tag = event.tagId ? tagById.get(event.tagId) : undefined;
+              const time = formatEventTime(event.startTime, event.endTime, timezone);
+              return (
+                <article key={event.id} className="flex flex-col gap-1 rounded border p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <time dateTime={time.startIso} className="text-sm text-gray-500">
+                      {time.timeOnly}
+                    </time>
+                    {tag && (
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${TAG_COLOR_CLASS[tag.color]}`}>
+                        {tag.label}
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="font-medium">{event.name}</h3>
+                  {event.location && <p className="text-sm text-gray-600">{event.location}</p>}
+                  {event.note && <p className="mt-1 text-sm text-gray-500">{event.note}</p>}
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      ))}
+    </div>
   );
 }
