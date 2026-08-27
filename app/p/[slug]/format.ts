@@ -58,6 +58,7 @@ export function formatDateRange(dateRangeStart: Date, dateRangeEnd: Date, timezo
 
 export interface FormattedEventTime {
   display: string;
+  timeOnly: string;
   startIso: string;
   endIso: string | null;
 }
@@ -65,14 +66,38 @@ export interface FormattedEventTime {
 export function formatEventTime(startTime: Date, endTime: Date | null, timezone: string): FormattedEventTime {
   // 分開組 月/日 與 時:分（而非用單一 formatter 混合輸出），避免不同 JS runtime 的 ICU
   // 對 Intl.DateTimeFormat 混合 date+time 選項插入的分隔空白字元（例如 U+2009 THIN SPACE）不一致。
-  const startDisplay = `${getMonthDayFormatter(timezone).format(startTime)} ${getTimeOnlyFormatter(timezone).format(startTime)}`;
+  const startTimeOnly = getTimeOnlyFormatter(timezone).format(startTime);
+  const timeOnly = endTime ? `${startTimeOnly}–${getTimeOnlyFormatter(timezone).format(endTime)}` : startTimeOnly;
+  const startDisplay = `${getMonthDayFormatter(timezone).format(startTime)} ${startTimeOnly}`;
   const display = endTime ? `${startDisplay}–${getTimeOnlyFormatter(timezone).format(endTime)}` : startDisplay;
 
   return {
     display,
+    timeOnly,
     startIso: startTime.toISOString(),
     endIso: endTime ? endTime.toISOString() : null,
   };
+}
+
+// lineup 版型已依 dayLabel 分組，卡片內用 timeOnly（僅時:分）即可，不需重複顯示月/日。
+export function groupEventsByDay<T extends { startTime: Date }>(
+  events: T[],
+  timezone: string,
+): { dayLabel: string; events: T[] }[] {
+  const formatter = getMonthDayFormatter(timezone);
+  const groups: { dayLabel: string; events: T[] }[] = [];
+
+  for (const event of events) {
+    const dayLabel = formatter.format(event.startTime);
+    const lastGroup = groups[groups.length - 1];
+    if (lastGroup && lastGroup.dayLabel === dayLabel) {
+      lastGroup.events.push(event);
+    } else {
+      groups.push({ dayLabel, events: [event] });
+    }
+  }
+
+  return groups;
 }
 
 export function buildMetaDescription(title: string, dateRangeStart: Date, dateRangeEnd: Date): string {
