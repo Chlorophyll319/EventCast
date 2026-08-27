@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildMetaDescription, formatDateRange, formatEventTime, resolveRobots, shouldIncrementViewCount } from "./format";
+import {
+  buildMetaDescription,
+  formatDateRange,
+  formatEventTime,
+  groupEventsByDay,
+  resolveRobots,
+  shouldIncrementViewCount,
+} from "./format";
 
 describe("formatDateRange", () => {
   it("formats a date range in UTC", () => {
@@ -45,6 +52,55 @@ describe("formatEventTime", () => {
     const result = formatEventTime(start, null, "Asia/Taipei");
 
     expect(result.display).toBe("09/01 16:00");
+  });
+
+  it("exposes a timeOnly field without the date, for use under a day grouping", () => {
+    const start = new Date("2026-09-01T08:00:00.000Z");
+    const end = new Date("2026-09-01T10:30:00.000Z");
+
+    expect(formatEventTime(start, null, "UTC").timeOnly).toBe("08:00");
+    expect(formatEventTime(start, end, "UTC").timeOnly).toBe("08:00–10:30");
+  });
+});
+
+describe("groupEventsByDay", () => {
+  it("returns an empty array for no events", () => {
+    expect(groupEventsByDay([], "UTC")).toEqual([]);
+  });
+
+  it("groups consecutive same-day events into one group", () => {
+    const events = [
+      { startTime: new Date("2026-09-01T08:00:00.000Z") },
+      { startTime: new Date("2026-09-01T12:00:00.000Z") },
+    ];
+
+    const groups = groupEventsByDay(events, "UTC");
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].dayLabel).toBe("09/01");
+    expect(groups[0].events).toHaveLength(2);
+  });
+
+  it("splits events across days into separate groups, in order", () => {
+    const events = [
+      { startTime: new Date("2026-09-01T08:00:00.000Z") },
+      { startTime: new Date("2026-09-02T08:00:00.000Z") },
+    ];
+
+    const groups = groupEventsByDay(events, "UTC");
+
+    expect(groups.map((group) => group.dayLabel)).toEqual(["09/01", "09/02"]);
+    expect(groups[0].events).toHaveLength(1);
+    expect(groups[1].events).toHaveLength(1);
+  });
+
+  it("shifts the grouping day across a day boundary for a non-UTC timezone", () => {
+    // 23:30 UTC = 07:30 next day in Asia/Taipei (+8)，分組日期應依當地日期而非 UTC 日期。
+    const events = [{ startTime: new Date("2026-08-31T23:30:00.000Z") }];
+
+    const groups = groupEventsByDay(events, "Asia/Taipei");
+
+    expect(groups[0].dayLabel).toBe("09/01");
   });
 });
 
